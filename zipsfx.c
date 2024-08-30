@@ -30,10 +30,18 @@ new_file_read(struct archive *a, void *client_data, const void **buff)
     return old_file_read(a, client_data, buff);
 }
 
-enum {zipsfx_index_filenames_num = 100,  zipsfx_index_filenames_len = 128, zipsfx_open_file_limit = 100};
+enum {zipsfx_index_filenames_num = 100,  zipsfx_index_filenames_len = 128, zipsfx_open_file_limit = 100, zipsfx_buffer_size = 8192};
 struct zipsfx_index
 {
+#ifdef ZIPSFX_USE_MMAP
+    int file;
+    char* ptr;
+    size_t ptrsize;
+#else
     FILE* file;
+    char buf[zipsfx_buffer_size];
+#endif
+
     char filename[zipsfx_index_filenames_len]; 
     
     char filenames[zipsfx_index_filenames_num * zipsfx_index_filenames_len];
@@ -42,9 +50,6 @@ struct zipsfx_index
     
     size_t offsets[zipsfx_index_filenames_num], sizes[zipsfx_index_filenames_num];
     size_t files_num;
-
-    FILE* openedfiles[zipsfx_open_file_limit];
-    void* openedbufs[zipsfx_open_file_limit];
 };
 void zipsfx_list(struct zipsfx_index* index)
 {
@@ -58,56 +63,59 @@ void zipsfx_list(struct zipsfx_index* index)
 
 FILE* zipsfx_fopen(struct zipsfx_index* index, const char filename[], const char mode[])
 {
-    if(0 == strcmp("rb", mode))
+    if(0 != strcmp("rb", mode))
+        return NULL;
+    
+    size_t filenames_start = 0;
+    for(size_t i = 0; i < index->files_num; i++)
     {
-        size_t filenames_start = 0;
-        for(size_t i = 0; i < index->files_num; i++)
+        if(0 == strncmp(index->filenames + filenames_start, filename, index->filenames_lens[i]))
         {
-            if(0 == strncmp(index->filenames + filenames_start, filename, index->filenames_lens[i]))
+            size_t offset = index->offsets[i], size = index->sizes[i];
+#if ZIPSFX_USE_MMAP
+            FILE* f = fmemopen(index->ptr + offset, size, "rb");
+#else
+            FILE* f = fmemopen(NULL, size, "rb+");
+            fseek(index->file, offset, SEEK_SET);
+            while(size > 0)
             {
-                fseek(index->file, index->offsets[i], SEEK_SET);
-                char* buf = malloc(index->sizes[i]);
-                fread(buf, 1, index->sizes[i], index->file);
-                FILE* f = fmemopen(buf, index->sizes[i], mode);
-                for(int k = 0; k < zipsfx_open_file_limit; k++)
-                {
-                    if(index->openedfiles[k] == NULL)
-                    {
-                        index->openedfiles[k] = f;
-                        index->openedbufs[k] = buf;
-                        break;
-                    }
-                }
-                return f;
+                size_t len = fread(index->buf, 1, sizeof(index->buf) <= size ? sizeof(index->buf) : size, index->file);
+                fwrite(index->buf, 1, len, f);
+                size -= len;
             }
-            filenames_start += index->filenames_lens[i] + 1;
+            fseek(f, 0, SEEK_SET);
+#endif
+            return f;
         }
+        filenames_start += index->filenames_lens[i] + 1;
     }
     return NULL;
 }
-void zipsfx_fclose(struct zipsfx_index* index, FILE* f)
+void zipsfx_index_destroy(struct zipsfx_index* index)
 {
-    for(int k = 0; k < zipsfx_open_file_limit; k++)
-    {
-        if(index->openedfiles[k] == f)
-        {
-            index->openedfiles[k] = NULL;
-            free(index->openedbufs[k]);
-            break;
-        }
-    }
-    fclose(f);
+#if ZIPSFX_USE_MMAP
+    munmap(index->ptr, index->ptrsize);
+    close(index->file);
+#else
+    fclose(index->file);
+#endif
+    free(index);
 }
 struct zipsfx_index* zipsfx_index_build(const char filename[])
 {
-    struct zipsfx_index* index = malloc(sizeof(struct zipsfx_index));
-    memset(index, 0, sizeof(sizeof(struct zipsfx_index)));
-    index->file = fopen(filename, "rb");
+    struct zipsfx_index* index = calloc(1, sizeof(struct zipsfx_index));
     strcpy(index->filename, filename);
+#if ZIPSFX_USE_MMAP
+    index->file = open(filename, O_RDONLY);
+    struct stat file_info; assert(fstat(index->file, &file_info) >= 0);
+    index->ptrsize = file_info.st_size;
+    index->ptr = mmap(NULL, index->ptrsize, PROT_READ, MAP_PRIVATE, index->file, 0);
+#else
+    index->file = fopen(filename, "rb");
+#endif
 
     struct archive *a = archive_read_new();
     archive_read_support_format_zip(a);
-    
     assert(ARCHIVE_OK == archive_read_open_filename(a, filename, 10240));
     
     // struct archive_read in https://github.com/libarchive/libarchive/blob/master/libarchive/archive_read_private.h
@@ -125,19 +133,16 @@ struct zipsfx_index* zipsfx_index_build(const char filename[])
         int r = archive_read_next_header(a, &entry);
         if (r == ARCHIVE_EOF) break;
         if (r != ARCHIVE_OK) { fprintf(stderr, "%s\n", archive_error_string(a)); return NULL; }
-
-        const void* firstblock_buff;
-        size_t firstblock_len;
-        int64_t firstblock_offset;
-        r = archive_read_data_block(a, &firstblock_buff, &firstblock_len, &firstblock_offset);
-        
+        const void* block_buff;
+        size_t block_len;
+        int64_t block_offset;
+        r = archive_read_data_block(a, &block_buff, &block_len, &block_offset);
         int filetype = archive_entry_filetype(entry);
-        if(filetype == AE_IFREG && archive_entry_size_is_set(entry) != 0 && last_file_buff != NULL && last_file_buff <= firstblock_buff && firstblock_buff < last_file_buff + last_file_block_size)
+        if(filetype == AE_IFREG && archive_entry_size_is_set(entry) != 0 && last_file_buff != NULL && last_file_buff <= block_buff && block_buff < last_file_buff + last_file_block_size)
         {
             size_t byte_size = (size_t)archive_entry_size(entry);
-            size_t byte_offset = last_file_offset + (size_t)(firstblock_buff - last_file_buff);
+            size_t byte_offset = last_file_offset + (size_t)(block_buff - last_file_buff);
             const char* entryname = archive_entry_pathname(entry);
-
             strcpy(index->filenames + index->filenames_lens_total, entryname);
             index->filenames_lens[index->files_num] = strlen(entryname);
             index->filenames_lens_total += index->filenames_lens[index->files_num] + 1;
@@ -145,7 +150,6 @@ struct zipsfx_index* zipsfx_index_build(const char filename[])
             index->sizes[index->files_num] = byte_size;
             index->files_num++;
         }
-        
         r = archive_read_data_skip(a);
         if (r == ARCHIVE_EOF) break;
         if (r != ARCHIVE_OK) { fprintf(stderr, "%s\n", archive_error_string(a)); return NULL; }
@@ -153,11 +157,6 @@ struct zipsfx_index* zipsfx_index_build(const char filename[])
     assert(ARCHIVE_OK == archive_read_close(a));
     assert(ARCHIVE_OK == archive_read_free(a));
     return index;
-}
-void zipsfx_index_destroy(struct zipsfx_index* index)
-{
-    fclose(index->file);
-    free(index);
 }
 
 int
@@ -182,10 +181,12 @@ main(int argc, const char **argv)
             fwrite(buf, 1, fread(buf, 1, sizeof(buf), f), stdout);
         }
         while(!feof(f) && !ferror(f));
-        zipsfx_fclose(index, f);
+        fclose(f);
     }
     else
+    {
         zipsfx_list(index);
+    }
     zipsfx_index_destroy(index);
     return 0;
 }
