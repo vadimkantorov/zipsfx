@@ -18,16 +18,11 @@
 int cat_mmap(const char* filename, size_t offset, size_t size)
 {
     int fd = open(filename, O_RDONLY);
-    const char* ptr = (const char*)mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
-
-    //printf("%p %c%c%c\n", ptr, ptr[1], ptr[2], ptr[3]);
-    //printf("dd if=%s of=tmp.bin bs=1 skip=%zu count=%zu\n", filename, offset, size);
-    //write(1, ptr + offset, size);
-    fwrite(ptr + offset, 1, size, stdout);
-    //close(fd);
+    struct stat s; fstat(fd, &s); const char* ptr = mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    write(1, ptr + offset, size);
+    close(fd);
     return 0;
 }
-
 int cat_fread(const char* filename, size_t offset, size_t size)
 {
     FILE* f = fopen(filename, "rb");
@@ -42,7 +37,6 @@ int cat_fread(const char* filename, size_t offset, size_t size)
     fclose(f);
     return 0;
 }
-
 int cat_direct(struct archive* a, const void* firstblock_buff, size_t firstblock_len, int64_t firstblock_offset)
 {
     fwrite(firstblock_buff, 1, firstblock_len, stdout);
@@ -55,7 +49,6 @@ int cat_direct(struct archive* a, const void* firstblock_buff, size_t firstblock
     }
     return 0;
 }
-
 
 void* last_file_buff;
 size_t last_file_block_size;
