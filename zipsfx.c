@@ -160,42 +160,6 @@ void zipsfx_index_destroy(struct zipsfx_index* index)
     free(index);
 }
 
-
-int cat_mmap(const char* filename, size_t offset, size_t size)
-{
-    int fd = open(filename, O_RDONLY);
-    struct stat s; fstat(fd, &s); const char* ptr = mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    write(1, ptr + offset, size);
-    close(fd);
-    return 0;
-}
-int cat_fread(const char* filename, size_t offset, size_t size)
-{
-    FILE* f = fopen(filename, "rb");
-    fseek(f, offset, SEEK_SET);
-    char buf[1024];
-    while(size > 0)
-    {
-        int len = fread(buf, 1, sizeof(buf) <= size ? sizeof(buf) : size, f);
-        fwrite(buf, 1, len, stdout);
-        size -= len;
-    }
-    fclose(f);
-    return 0;
-}
-int cat_direct(struct archive* a, const void* firstblock_buff, size_t firstblock_len, int64_t firstblock_offset)
-{
-    fwrite(firstblock_buff, 1, firstblock_len, stdout);
-    for(;;)
-    {
-        int r = archive_read_data_block(a, &firstblock_buff, &firstblock_len, &firstblock_offset);
-        if (r == ARCHIVE_EOF || r != ARCHIVE_OK)
-            break;
-        fwrite(firstblock_buff, 1, firstblock_len, stdout);
-    }
-    return 0;
-}
-
 int
 main(int argc, const char **argv)
 {
