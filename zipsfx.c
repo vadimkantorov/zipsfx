@@ -144,8 +144,6 @@ struct zipsfx_index* zipsfx_index_build(const char filename[])
             index->offsets[index->files_num] = byte_offset;
             index->sizes[index->files_num] = byte_size;
             index->files_num++;
-
-            //free(entryname);
         }
         
         r = archive_read_data_skip(a);
