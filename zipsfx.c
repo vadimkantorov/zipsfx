@@ -53,10 +53,8 @@ int cat_direct(struct archive* a, const void* firstblock_buff, size_t firstblock
 void* last_file_buff;
 size_t last_file_block_size;
 size_t last_file_offset;
-
 archive_read_callback* old_file_read;
 archive_seek_callback* old_file_seek;
-
 static ssize_t
 new_file_read(struct archive *a, void *client_data, const void **buff)
 {
@@ -65,18 +63,10 @@ new_file_read(struct archive *a, void *client_data, const void **buff)
             int	 fd;
             size_t	 block_size;
             void	*buffer;
-            //mode_t	 st_mode;  /* Mode bits for opened file. */
-            //char	 use_lseek;
-            //enum fnt_e { FNT_STDIN, FNT_MBS, FNT_WCS } filename_type;
-            //union {
-            //	char	 m[1];/* MBS filename. */
-            //	wchar_t	 w[1];/* WCS filename. */
-            //} filename; /* Must be last! */
     } *mine = client_data;
     last_file_buff = mine->buffer;
     last_file_block_size = mine->block_size;
     last_file_offset = old_file_seek(a, client_data, 0, SEEK_CUR);
-    
     return old_file_read(a, client_data, buff);
 }
 
@@ -125,9 +115,9 @@ main(int argc, const char **argv)
             if(membername == NULL)
                 puts(archive_entry_pathname(entry));
             else if(0 == strcmp(membername, archive_entry_pathname(entry)))
-                //return cat_direct(a, firstblock_buff, firstblock_len, firstblock_offset);
+                return cat_direct(a, firstblock_buff, firstblock_len, firstblock_offset);
                 //return cat_fread(filename, byte_offset, byte_size);
-                return cat_mmap(filename, byte_offset, byte_size);
+                //return cat_mmap(filename, byte_offset, byte_size);
         }
         
         r = archive_read_data_skip(a);
