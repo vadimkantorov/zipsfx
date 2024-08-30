@@ -1,5 +1,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -10,10 +11,51 @@
 
 #include <archive.h>
 #include <archive_entry.h>
-
 // define required for #include <archive_read_private.h>
 #define __LIBARCHIVE_BUILD
 #include <archive_read_private.h>
+
+int cat_mmap(const char* filename, size_t offset, size_t size)
+{
+    int fd = open(filename, O_RDONLY);
+    const char* ptr = (const char*)mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+
+    //printf("%p %c%c%c\n", ptr, ptr[1], ptr[2], ptr[3]);
+    //printf("dd if=%s of=tmp.bin bs=1 skip=%zu count=%zu\n", filename, offset, size);
+    //write(1, ptr + offset, size);
+    fwrite(ptr + offset, 1, size, stdout);
+    //close(fd);
+    return 0;
+}
+
+int cat_fread(const char* filename, size_t offset, size_t size)
+{
+    FILE* f = fopen(filename, "rb");
+    fseek(f, offset, SEEK_SET);
+    char buf[1024];
+    while(size > 0)
+    {
+        int len = fread(buf, 1, sizeof(buf) <= size ? sizeof(buf) : size, f);
+        fwrite(buf, 1, len, stdout);
+        size -= len;
+    }
+    fclose(f);
+    return 0;
+}
+
+int cat_direct(struct archive* a, const void* firstblock_buff, size_t firstblock_len, int64_t firstblock_offset)
+{
+    fwrite(firstblock_buff, 1, firstblock_len, stdout);
+    for(;;)
+    {
+        int r = archive_read_data_block(a, &firstblock_buff, &firstblock_len, &firstblock_offset);
+        if (r == ARCHIVE_EOF || r != ARCHIVE_OK)
+            break;
+        fwrite(firstblock_buff, 1, firstblock_len, stdout);
+    }
+    return 0;
+}
+
 
 void* last_file_buff;
 size_t last_file_block_size;
@@ -48,14 +90,13 @@ new_file_read(struct archive *a, void *client_data, const void **buff)
 int
 main(int argc, const char **argv)
 {
-    if(argc < 2)
-        return 1;
-
-    const char *filename = argv[1];
+    if(argc != 1 && argc != 2)
+        return -1;
+    
+    const char *filename = argv[0];
+    const char* membername = argc == 2 ? argv[1] : NULL;
 
     struct archive *a = archive_read_new();
-    archive_read_support_format_tar(a);
-    archive_read_support_format_iso9660(a);
     archive_read_support_format_zip(a);
     
     assert(ARCHIVE_OK == archive_read_open_filename(a, filename, 10240));
@@ -86,10 +127,15 @@ main(int argc, const char **argv)
         {
             size_t byte_size = (size_t)archive_entry_size(entry);
             size_t byte_offset = last_file_offset + (size_t)(firstblock_buff - last_file_buff);
-            printf("#dd if=\"%s\" of=\"%s\" bs=1 skip=%zu count=%zu\n", filename, archive_entry_pathname(entry), byte_offset, byte_size);
+            (void)byte_size;
+            (void)byte_offset;
+            if(membername == NULL)
+                puts(archive_entry_pathname(entry));
+            else if(0 == strcmp(membername, archive_entry_pathname(entry)))
+                //return cat_direct(a, firstblock_buff, firstblock_len, firstblock_offset);
+                //return cat_fread(filename, byte_offset, byte_size);
+                return cat_mmap(filename, byte_offset, byte_size);
         }
-        else
-            printf("#false #%s %d = %s\n", archive_entry_pathname(entry), filetype, filetype == AE_IFMT ? "AE_IFMT" : filetype == AE_IFREG ? "AE_IFREG" : filetype == AE_IFLNK ? "AE_IFLNK" : filetype == AE_IFSOCK ? "AE_IFSOCK" : filetype == AE_IFCHR ? "AE_IFCHR" : filetype == AE_IFBLK ? "AE_IFBLK" : filetype == AE_IFDIR ? "AE_IFDIR" : filetype == AE_IFIFO ? "AE_IFIFO" : "archive_entry_pathname(entry) value is unknown");
         
         r = archive_read_data_skip(a);
         if (r == ARCHIVE_EOF) break;

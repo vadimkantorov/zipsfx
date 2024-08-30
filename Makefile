@@ -9,3 +9,4 @@ zipsfx.zip:
 
 zipsfxzip: zipsfx zipsfx.zip
 	cat zipsfx zipsfx.zip > $@
+	chmod +x $@
